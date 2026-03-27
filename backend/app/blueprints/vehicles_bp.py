@@ -1,0 +1,140 @@
+from flask import Blueprint, request
+from flask_jwt_extended import jwt_required
+
+from app.extensions import db
+from app.models.booking import Booking
+from app.models.vehicle import Vehicle
+from app.schemas.vehicle_schema import (
+    VehicleAvailabilityQuerySchema,
+    VehicleCreateSchema,
+    VehicleListQuerySchema,
+    VehicleUpdateSchema,
+)
+from app.utils.decorators import role_required
+from app.utils.responses import error_response, success_response
+from app.utils.validators import validate_or_400
+
+vehicles_bp = Blueprint("vehicles", __name__)
+
+
+@vehicles_bp.get("")
+def list_vehicles():
+    query_data, error = validate_or_400(VehicleListQuerySchema(), request.args.to_dict())
+    if error:
+        return error
+
+    query = Vehicle.query.filter_by(is_active=True)
+
+    if query_data.get("category_id"):
+        query = query.filter(Vehicle.category_id == query_data["category_id"])
+    if query_data.get("fuel_type"):
+        query = query.filter(Vehicle.fuel_type == query_data["fuel_type"])
+    if query_data.get("seats"):
+        query = query.filter(Vehicle.seating_capacity == query_data["seats"])
+    if query_data.get("status"):
+        query = query.filter(Vehicle.status == query_data["status"])
+
+    page = query_data.get("page", 1)
+    per_page = query_data.get("per_page", 20)
+    pagination = query.order_by(Vehicle.created_at.desc()).paginate(page=page, per_page=per_page, error_out=False)
+
+    return success_response(
+        data={"items": [item.to_dict() for item in pagination.items]},
+        meta={"page": page, "per_page": per_page, "total": pagination.total},
+    )
+
+
+@vehicles_bp.get("/<int:vehicle_id>")
+def get_vehicle(vehicle_id: int):
+    vehicle = Vehicle.query.get(vehicle_id)
+    if vehicle is None or not vehicle.is_active:
+        return error_response("NOT_FOUND", "Vehicle not found", 404)
+    return success_response({"vehicle": vehicle.to_dict()})
+
+
+@vehicles_bp.post("")
+@jwt_required()
+@role_required("fleet_manager", "admin")
+def create_vehicle():
+    payload, error = validate_or_400(VehicleCreateSchema(), request.get_json(silent=True) or {})
+    if error:
+        return error
+
+    duplicate = Vehicle.query.filter_by(registration_number=payload["registration_number"]).first()
+    if duplicate:
+        return error_response("CONFLICT", "Registration number already exists", 409)
+
+    vehicle = Vehicle(**payload)
+    db.session.add(vehicle)
+    db.session.commit()
+    return success_response({"vehicle": vehicle.to_dict()}, 201)
+
+
+@vehicles_bp.get("/<int:vehicle_id>/availability")
+def vehicle_availability(vehicle_id: int):
+    vehicle = Vehicle.query.get(vehicle_id)
+    if vehicle is None or not vehicle.is_active:
+        return error_response("NOT_FOUND", "Vehicle not found", 404)
+
+    query_data, error = validate_or_400(VehicleAvailabilityQuerySchema(), request.args.to_dict())
+    if error:
+        return error
+
+    pickup_time = query_data["pickup_time"]
+    return_time = query_data["return_time"]
+    if return_time <= pickup_time:
+        return error_response("VALIDATION_ERROR", "return_time must be after pickup_time", 400)
+
+    conflicting_booking = Booking.query.filter(
+        Booking.vehicle_id == vehicle_id,
+        Booking.status.in_(["pending", "confirmed", "active"]),
+        Booking.pickup_time < return_time,
+        Booking.return_time > pickup_time,
+    ).first()
+
+    return success_response(
+        {
+            "vehicle_id": vehicle_id,
+            "is_available": conflicting_booking is None and vehicle.status == "available",
+            "status": vehicle.status,
+        }
+    )
+
+
+@vehicles_bp.put("/<int:vehicle_id>")
+@jwt_required()
+@role_required("fleet_manager", "admin")
+def update_vehicle(vehicle_id: int):
+    vehicle = Vehicle.query.get(vehicle_id)
+    if vehicle is None or not vehicle.is_active:
+        return error_response("NOT_FOUND", "Vehicle not found", 404)
+
+    payload, error = validate_or_400(VehicleUpdateSchema(), request.get_json(silent=True) or {})
+    if error:
+        return error
+    if not payload:
+        return error_response("VALIDATION_ERROR", "No updatable fields provided", 400)
+
+    if "registration_number" in payload and payload["registration_number"] != vehicle.registration_number:
+        duplicate = Vehicle.query.filter_by(registration_number=payload["registration_number"]).first()
+        if duplicate:
+            return error_response("CONFLICT", "Registration number already exists", 409)
+
+    for key, value in payload.items():
+        setattr(vehicle, key, value)
+
+    db.session.commit()
+    return success_response({"vehicle": vehicle.to_dict()})
+
+
+@vehicles_bp.delete("/<int:vehicle_id>")
+@jwt_required()
+@role_required("fleet_manager", "admin")
+def delete_vehicle(vehicle_id: int):
+    vehicle = Vehicle.query.get(vehicle_id)
+    if vehicle is None or not vehicle.is_active:
+        return error_response("NOT_FOUND", "Vehicle not found", 404)
+
+    vehicle.is_active = False
+    db.session.commit()
+    return success_response({"vehicle": vehicle.to_dict()})
