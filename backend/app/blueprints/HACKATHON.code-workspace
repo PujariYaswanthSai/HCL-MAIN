@@ -1,0 +1,13 @@
+{
+	"folders": [
+		{
+			"name": "HACKATHON",
+			"path": "../../.."
+		},
+		{
+			"name": "FRONTEND",
+			"path": "../../../../FRONTEND"
+		}
+	],
+	"settings": {}
+}
