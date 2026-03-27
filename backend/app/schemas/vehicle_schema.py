@@ -32,6 +32,10 @@ class VehicleAvailabilityQuerySchema(Schema):
 
 class VehicleListQuerySchema(Schema):
     category_id = fields.Int(required=False)
+    type = fields.Str(required=False)
+    query = fields.Str(required=False)
+    min_price = fields.Float(required=False)
+    max_price = fields.Float(required=False)
     fuel_type = fields.Str(required=False)
     seats = fields.Int(required=False)
     status = fields.Str(required=False)

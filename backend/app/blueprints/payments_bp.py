@@ -4,6 +4,7 @@ from flask_jwt_extended import get_jwt, get_jwt_identity, jwt_required
 
 from app.extensions import db
 from app.models.booking import Booking
+from app.models.booking_status_log import BookingStatusLog
 from app.models.payment import Payment
 from app.schemas.payment_schema import PaymentRefundSchema, PaymentSchema
 from app.utils.decorators import role_required
@@ -40,7 +41,16 @@ def initiate_payment():
         db.session.add(payment)
 
     payment.status = "success"
+    previous_status = booking.status
     booking.status = "confirmed"
+    db.session.add(
+        BookingStatusLog(
+            booking_id=booking.id,
+            old_status=previous_status,
+            new_status="confirmed",
+            reason="Payment successful",
+        )
+    )
     db.session.commit()
 
     return success_response({"payment": payment.to_dict(), "booking": booking.to_dict()})

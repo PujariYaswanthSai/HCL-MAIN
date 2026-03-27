@@ -3,19 +3,34 @@ from flask_jwt_extended import get_jwt_identity, jwt_required
 
 from app.extensions import db
 from app.models.booking import Booking
+from app.models.booking_status_log import BookingStatusLog
 from app.schemas.booking_schema import (
     BookingCreateSchema,
+    BookingExtendSchema,
     BookingEstimateSchema,
     BookingListQuerySchema,
     BookingStatusUpdateSchema,
 )
 from app.utils.decorators import role_required
-from app.services.booking_service import create_booking, estimate_booking_price
+from app.services.booking_service import create_booking, estimate_booking_price, extend_booking
 from app.utils.decorators import rate_limit
 from app.utils.responses import error_response, success_response
 from app.utils.validators import validate_or_400
 
 bookings_bp = Blueprint("bookings", __name__)
+
+
+def _log_status_transition(booking: Booking, new_status: str, reason: str | None = None):
+    previous_status = booking.status
+    booking.status = new_status
+    db.session.add(
+        BookingStatusLog(
+            booking_id=booking.id,
+            old_status=previous_status,
+            new_status=new_status,
+            reason=reason,
+        )
+    )
 
 
 @bookings_bp.post("/estimate")
@@ -31,6 +46,7 @@ def estimate_booking():
             vehicle_id=payload["vehicle_id"],
             pickup_time=payload["pickup_time"],
             return_time=payload["return_time"],
+            coupon_code=payload.get("coupon_code"),
         )
     except ValueError as err:
         return error_response("VALIDATION_ERROR", str(err), 400)
@@ -53,6 +69,7 @@ def create_booking_route():
         pickup_time=payload["pickup_time"],
         return_time=payload["return_time"],
         location=payload["pickup_location"],
+        coupon_code=payload.get("coupon_code"),
     )
 
     if booking_error:
@@ -108,8 +125,33 @@ def cancel_booking(booking_id: int):
     if booking.status not in ("pending", "confirmed"):
         return error_response("STATE_ERROR", "Only pending/confirmed bookings can be canceled", 409)
 
-    booking.status = "canceled"
+    _log_status_transition(booking, "canceled", reason="Customer canceled booking")
     db.session.commit()
+    return success_response({"booking": booking.to_dict()})
+
+
+@bookings_bp.put("/<int:booking_id>/extend")
+@jwt_required()
+def extend_booking_route(booking_id: int):
+    user_id = int(get_jwt_identity())
+    booking = Booking.query.get(booking_id)
+    if booking is None:
+        return error_response("NOT_FOUND", "Booking not found", 404)
+    if booking.user_id != user_id:
+        return error_response("FORBIDDEN", "You cannot extend this booking", 403)
+
+    payload, error = validate_or_400(BookingExtendSchema(), request.get_json(silent=True) or {})
+    if error:
+        return error
+
+    booking, booking_error = extend_booking(
+        booking=booking,
+        new_return_time=payload["return_time"],
+        coupon_code=payload.get("coupon_code"),
+    )
+    if booking_error:
+        return error_response("BOOKING_ERROR", booking_error, 409)
+
     return success_response({"booking": booking.to_dict()})
 
 
@@ -124,7 +166,7 @@ def mark_pickup(booking_id: int):
     if booking.status != "confirmed":
         return error_response("STATE_ERROR", "Only confirmed bookings can be marked as picked up", 409)
 
-    booking.status = "active"
+    _log_status_transition(booking, "active", reason="Vehicle picked up")
     if booking.vehicle:
         booking.vehicle.status = "booked"
     db.session.commit()
@@ -142,7 +184,7 @@ def mark_return(booking_id: int):
     if booking.status != "active":
         return error_response("STATE_ERROR", "Only active bookings can be marked as returned", 409)
 
-    booking.status = "completed"
+    _log_status_transition(booking, "completed", reason="Vehicle returned")
     if booking.vehicle:
         booking.vehicle.status = "available"
     db.session.commit()
@@ -161,7 +203,7 @@ def update_booking_status(booking_id: int):
     if error:
         return error
 
-    booking.status = payload["status"]
+    _log_status_transition(booking, payload["status"], reason="Status updated by fleet/admin")
     if booking.vehicle and payload["status"] == "active":
         booking.vehicle.status = "booked"
     if booking.vehicle and payload["status"] in ("completed", "canceled"):

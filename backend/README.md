@@ -35,8 +35,16 @@ python init_db.py
 
 This will:
 - Create all 9 database tables
-- Seed sample data (users, vehicles, bookings, pricing rules, etc.)
+- Seed users/bookings/pricing data and import vehicle inventory from `Automobile_data.csv` when available
 - Generate demo credentials for testing
+
+Optional dataset override:
+
+```env
+AUTOMOBILE_DATASET_PATH=d:\\VEHICLE!\\Automobile_data.csv
+```
+
+If the CSV path is missing, the backend falls back to the default sample fleet.
 
 ### 4. Run the Server
 
