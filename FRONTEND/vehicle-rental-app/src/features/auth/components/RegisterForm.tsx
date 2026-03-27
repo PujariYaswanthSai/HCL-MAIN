@@ -19,13 +19,7 @@ export function RegisterForm() {
 
   const onSubmit = async (event: React.FormEvent) => {
     event.preventDefault()
-    if (!name || !email || password.length < 8) {
-      setError({
-        code: 'VALIDATION',
-        message: 'Name, email and password (min 8 chars) are required',
-      })
-      return
-    }
+    
     try {
       setLoading(true)
       setError(null)
